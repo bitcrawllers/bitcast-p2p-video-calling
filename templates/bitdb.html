@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>WebRTC Video Call with Supabase Signaling - Neon Theme</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js"></script>
+  <style>
+    body {
+      background-color: #000;
+      color: #39ff14;
+      font-family: 'Courier New', monospace;
+    }
+    .btn-neon {
+      background-color: #39ff14;
+      color: #000;
+      border: none;
+      transition: all 0.3s ease;
+    }
+    .btn-neon:hover {
+      box-shadow: 0 0 10px #39ff14, 0 0 20px #39ff14;
+      transform: scale(1.05);
+    }
+    .neon-border {
+      border: 1px solid #39ff14;
+      border-radius: 10px;
+      padding: 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 0 15px #39ff14;
+    }
+    textarea, input {
+      background-color: #111;
+      color: #39ff14;
+      border: 1px solid #39ff14;
+    }
+    pre {
+      background-color: #111;
+      color: #39ff14;
+      padding: 10px;
+      border-radius: 8px;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+    video {
+      border: 2px solid #39ff14;
+      border-radius: 8px;
+    }
+  </style>
+</head>
+<body class="container py-5">
+
+  <h1 class="text-center mb-5">🚀 WebRTC Video Call with Supabase Signaling</h1>
+
+  <div class="neon-border">
+    <h3>🔑 Signup / Login</h3>
+    <input id="email" type="email" class="form-control mb-2" placeholder="Email">
+    <input id="password" type="password" class="form-control mb-3" placeholder="Password">
+    <button class="btn btn-neon me-2" onclick="signUp()">Sign Up</button>
+    <button class="btn btn-neon" onclick="login()">Login</button>
+  </div>
+
+  <div class="neon-border">
+    <h3>🛰️ Register Peer SDP + ICE</h3>
+    <input id="peer_id" class="form-control mb-3" placeholder="Your Peer ID">
+    <button class="btn btn-neon" onclick="startAndRegister()">Generate & Register</button>
+  </div>
+
+  <div class="neon-border">
+    <h3>🔗 Connect to Peer</h3>
+    <input id="remote_peer_id" class="form-control mb-3" placeholder="Remote Peer ID">
+    <button class="btn btn-neon" onclick="connectToPeer()">Connect to Remote Peer</button>
+  </div>
+
+  <div class="neon-border text-center">
+    <h3>🎥 Video Call</h3>
+    <video id="localVideo" autoplay muted playsinline style="width:45%;margin-right:5px;"></video>
+    <video id="remoteVideo" autoplay playsinline style="width:45%;"></video>
+  </div>
+
+  <div class="neon-border">
+    <h3>📜 Output Log</h3>
+    <pre id="output"></pre>
+  </div>
+
+<script>
+const supabaseClient = window.supabase.createClient(
+  'https://sujnzkyhqwoclkzzihis.supabase.co',
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN1am56a3locXdvY2xrenppaGlzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTEwNjAyODEsImV4cCI6MjA2NjYzNjI4MX0.ddQpTy7w11ctZWy3V1DIrpyZfr9bZjZf7nRaEDGksQU'
+);
+
+let pc;
+let localStream;
+let collectedIce = [];
+
+async function signUp() {
+  const email = document.getElementById('email').value;
+  const password = document.getElementById('password').value;
+  const { data, error } = await supabaseClient.auth.signUp({ email, password });
+  log("SignUp: " + JSON.stringify({ data, error }, null, 2));
+}
+
+async function login() {
+  const email = document.getElementById('email').value;
+  const password = document.getElementById('password').value;
+  const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+  if (error) alert("Login failed: " + error.message);
+  else log("Login: " + JSON.stringify(data, null, 2));
+}
+
+async function startAndRegister() {
+  const peerId = document.getElementById('peer_id').value;
+  const { data: user, error: userError } = await supabaseClient.auth.getUser();
+  if (!user?.user?.id) {
+    alert("Please login first!");
+    return;
+  }
+
+  log("Creating RTCPeerConnection...");
+  pc = new RTCPeerConnection();
+  collectedIce = [];
+
+  pc.onicecandidate = async event => {
+    if (event.candidate) {
+      collectedIce.push(event.candidate.toJSON());
+      log("Collected ICE: " + JSON.stringify(event.candidate.toJSON()));
+      const { error } = await supabaseClient.from('bitdb').update({ ice: collectedIce }).eq('peer_id', peerId);
+      if (error) log("Error updating ICE: " + JSON.stringify(error));
+    }
+  };
+
+  pc.ontrack = event => {
+    log("Received remote stream!");
+    document.getElementById('remoteVideo').srcObject = event.streams[0];
+  };
+
+  localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+  localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+  document.getElementById('localVideo').srcObject = localStream;
+
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  log("Created SDP offer:\n" + JSON.stringify(offer));
+
+  const { data, error } = await supabaseClient.from('bitdb').upsert({
+    peer_id: peerId,
+    sdp: offer,
+    ice: [],
+    owner_id: user.user.id
+  });
+  if (error) log("Error uploading offer: " + JSON.stringify(error));
+  else log("Offer uploaded:\n" + JSON.stringify(data, null, 2));
+}
+
+async function connectToPeer() {
+  const remotePeerId = document.getElementById('remote_peer_id').value;
+  const { data, error } = await supabaseClient.from('bitdb').select('*').eq('peer_id', remotePeerId).single();
+  if (error || !data) {
+    alert("Peer not found!");
+    return;
+  }
+
+  log("Connecting to remote peer: " + remotePeerId);
+  await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+
+  const answer = await pc.createAnswer();
+  await pc.setLocalDescription(answer);
+  log("Created answer:\n" + JSON.stringify(answer));
+
+  const { error: updateError } = await supabaseClient.from('bitdb').update({ sdp: answer }).eq('peer_id', remotePeerId);
+  if (updateError) log("Error sending answer: " + JSON.stringify(updateError));
+
+  if (data.ice) {
+    for (let candidate of data.ice) {
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        log("Added remote ICE: " + JSON.stringify(candidate));
+      } catch (e) {
+        log("Failed adding ICE: " + e);
+      }
+    }
+  }
+}
+
+function log(msg) {
+  console.log(msg);
+  document.getElementById('output').innerText += msg + '\n\n';
+}
+</script>
+
+</body>
+</html>
